@@ -190,8 +190,8 @@ pub fn evaluate_path(path: &Path<'_>, amount_in: U256) -> EvaluatePathResult {
     // Conservative slippage tolerance on the resulting sqrt_ratio.
     // Buy (ratio goes DOWN): limit = 98% of simulated ratio → allows further downward movement.
     // Sell (ratio goes UP): limit = 102% of simulated ratio → allows further upward movement.
-    let slippage_buy = U256::from(98u64);
-    let slippage_sell = U256::from(102u64);
+    let slippage_buy = U256::from(99u64);
+    let slippage_sell = U256::from(101u64);
     let hundred = U256::from(100u64);
 
     // TODO: check for partial fills, when pool goes out of liquidity

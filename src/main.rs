@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
-use ekubo_arb::{run_arbitrager, start_health_server, ArbitragerConfig, HealthState};
+use ekubo_arb::{run_arbitrager, start_health_server, ArbitragerConfig, DashboardState, HealthState};
 use tokio::signal;
 use tracing::{error, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
@@ -48,6 +48,14 @@ struct Args {
     /// 100 = 1 BIP = 0.01%, 10000 = 1%
     #[arg(long, env = "APP_MIN_PROFIT_HBIP", default_value_t = 100)]
     min_profit_hbip: i128,
+
+    /// Percentage of profit to tip (0–100, default 0 keeps all profit)
+    #[arg(long, env = "APP_TIP_PERCENTAGE", default_value_t = 0)]
+    tip_percentage: u64,
+
+    /// Maximum hops in arbitrage paths (default 3, max 4)
+    #[arg(long, env = "APP_MAX_HOPS", default_value_t = 3)]
+    max_hops: usize,
 
     /// Health server port
     #[arg(long, env = "APP_HEALTH_PORT", default_value_t = 8080)]
@@ -92,11 +100,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize health state - starts as NOT ready
     let health_state = Arc::new(HealthState::new());
 
-    // Start health server in the background
+    // Initialize dashboard state for API
+    let dashboard_state = Arc::new(DashboardState::new());
+
+    // Start health + dashboard server in the background
     let health_port = args.health_port;
     let health_state_clone = Arc::clone(&health_state);
+    let dashboard_state_clone = Arc::clone(&dashboard_state);
     tokio::spawn(async move {
-        start_health_server(health_state_clone, health_port).await;
+        start_health_server(health_state_clone, Some(dashboard_state_clone), health_port).await;
     });
 
     let json_path = format!("{}.json", args.from);
@@ -119,17 +131,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_from_block(args.from + 1)
     .with_broadcast(args.broadcast)
-    .with_min_profit_hbip(args.min_profit_hbip);
+    .with_min_profit_hbip(args.min_profit_hbip)
+    .with_tip_percentage(args.tip_percentage)
+    .with_max_hops(args.max_hops);
 
     // Create shutdown channel for graceful shutdown
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     // Run the arbitrager with retry logic
     let health_state_for_run = Arc::clone(&health_state);
-    let mut arbitrager_handle =
-        tokio::spawn(
-            async move { run_with_retries(config, health_state_for_run, shutdown_rx).await },
-        );
+    let dashboard_state_for_run = Arc::clone(&dashboard_state);
+    let mut arbitrager_handle = tokio::spawn(async move {
+        run_with_retries(config, health_state_for_run, dashboard_state_for_run, shutdown_rx).await
+    });
 
     // Wait for either shutdown signal or arbitrager completion
     tokio::select! {
@@ -167,6 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run_with_retries(
     config: ArbitragerConfig,
     health_state: Arc<HealthState>,
+    dashboard_state: Arc<DashboardState>,
     shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut consecutive_failures = 0u32;
@@ -187,6 +202,7 @@ async fn run_with_retries(
         match run_arbitrager(
             config.clone(),
             Some(Arc::clone(&health_state)),
+            Some(Arc::clone(&dashboard_state)),
             shutdown.clone(),
         )
         .await

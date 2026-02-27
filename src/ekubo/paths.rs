@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use super::evaluation::{Direction, Hop, Path, PoolWithTokens};
 use super::swap::U256;
 
-/// Maximum number of hops allowed in a path search.
-const MAX_HOPS: usize = 3;
+/// Default maximum number of hops allowed in a path search.
+pub const DEFAULT_MAX_HOPS: usize = 3;
 
 /// A route between two tokens through multiple pools
 #[derive(Debug, Clone)]
@@ -86,11 +86,22 @@ fn to_canonical_hex(token: U256) -> String {
 }
 
 /// Find all paths between source and destination tokens through the given pools.
-/// Uses DFS with a maximum path length of 4 hops.
+/// Uses DFS with a configurable maximum path length.
 pub fn get_paths<'a>(
     pools: impl IntoIterator<Item = &'a PoolWithTokens>,
     source: U256,
     destination: U256,
+) -> Vec<PathWithTokens> {
+    get_paths_with_max_hops(pools, source, destination, DEFAULT_MAX_HOPS)
+}
+
+/// Find all paths between source and destination tokens through the given pools.
+/// Uses DFS with a maximum path length of `max_hops`.
+pub fn get_paths_with_max_hops<'a>(
+    pools: impl IntoIterator<Item = &'a PoolWithTokens>,
+    source: U256,
+    destination: U256,
+    max_hops: usize,
 ) -> Vec<PathWithTokens> {
     // Build adjacency list: token -> token -> Route
     let mut graph: HashMap<String, HashMap<String, Route>> = HashMap::new();
@@ -144,6 +155,7 @@ pub fn get_paths<'a>(
         visited_tokens: &mut HashSet<String>,
         visited_pools: &mut HashSet<u64>,
         result: &mut Vec<PathWithTokens>,
+        max_hops: usize,
     ) {
         let current_key = to_canonical_hex(current);
 
@@ -175,7 +187,7 @@ pub fn get_paths<'a>(
 
                 hops.push(hop);
 
-                if hops.len() > MAX_HOPS {
+                if hops.len() > max_hops {
                     hops.pop();
                     continue;
                 }
@@ -199,6 +211,7 @@ pub fn get_paths<'a>(
                     visited_tokens,
                     visited_pools,
                     result,
+                    max_hops,
                 );
 
                 visited_pools.remove(&pool_key_hash);
@@ -217,6 +230,7 @@ pub fn get_paths<'a>(
         &mut visited_tokens,
         &mut visited_pools,
         &mut result,
+        max_hops,
     );
 
     result

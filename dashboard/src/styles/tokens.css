@@ -1,0 +1,52 @@
+:root {
+  /* Background */
+  --bg-primary: #0a0a0f;
+  --bg-surface: #1a1a26;
+  --bg-surface-hover: #22222e;
+  --bg-elevated: #252533;
+
+  /* Border & Grid */
+  --border-grid: rgba(100, 200, 255, 0.06);
+  --border-subtle: rgba(100, 200, 255, 0.1);
+  --border-accent: rgba(125, 211, 252, 0.3);
+
+  /* Accent */
+  --accent-ice: #7dd3fc;
+  --accent-ice-dim: rgba(125, 211, 252, 0.15);
+  --accent-ice-glow: rgba(125, 211, 252, 0.08);
+
+  /* Semantic */
+  --color-positive: #4ade80;
+  --color-positive-dim: rgba(74, 222, 128, 0.15);
+  --color-negative: #f87171;
+  --color-negative-dim: rgba(248, 113, 113, 0.15);
+  --color-warning: #fbbf24;
+  --color-warning-dim: rgba(251, 191, 36, 0.15);
+
+  /* Text */
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+
+  /* Fonts */
+  --font-display: 'Syne', sans-serif;
+  --font-body: 'DM Sans', sans-serif;
+  --font-mono: 'Space Mono', monospace;
+
+  /* Spacing */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --space-2xl: 32px;
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  /* Transitions */
+  --transition-fast: 150ms ease;
+  --transition-normal: 250ms ease;
+}

@@ -162,14 +162,26 @@ async fn metrics(State(state): State<Arc<HealthState>>) -> impl IntoResponse {
 ///
 /// This runs in the background and provides:
 /// - GET /health - Liveness probe
-/// - GET /ready - Readiness probe  
+/// - GET /ready - Readiness probe
 /// - GET /metrics - Application metrics
-pub async fn start_health_server(state: Arc<HealthState>, port: u16) {
-    let app = Router::new()
+/// - GET /api/* - Dashboard API (if dashboard_state provided)
+/// - GET /* - Dashboard frontend static files (fallback)
+pub async fn start_health_server(
+    state: Arc<HealthState>,
+    dashboard_state: Option<Arc<crate::DashboardState>>,
+    port: u16,
+) {
+    let health_routes = Router::new()
         .route("/health", get(liveness))
         .route("/ready", get(readiness))
         .route("/metrics", get(metrics))
         .with_state(state);
+
+    let app = if let Some(ds) = dashboard_state {
+        health_routes.merge(crate::dashboard::api::dashboard_router(ds))
+    } else {
+        health_routes
+    };
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 

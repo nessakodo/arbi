@@ -1,7 +1,7 @@
 use starknet::{core::types::Felt, signers::SigningKey};
 use tracing::debug;
 
-use crate::constants::{CHAIN_ID_MAINNET, DEFAULT_TIP_PERCENTAGE};
+use crate::constants::CHAIN_ID_MAINNET;
 use crate::gas::GasPriceCache;
 use crate::transaction::{
     build_execute_calldata, build_v3_payload, compute_invoke_v3_hash, StarknetCall,
@@ -41,12 +41,13 @@ impl Account {
 
     /// Build the signed transaction payload for broadcasting.
     /// `profit` is the raw expected profit in FRI — the per-unit tip is derived
-    /// internally as DEFAULT_TIP_PERCENTAGE% of profit / L2 gas max amount.
+    /// internally as `tip_percentage`% of profit / L2 gas max amount.
     pub fn build_payload(
         &mut self,
         gas_price_cache: &GasPriceCache,
         calls: Vec<StarknetCall>,
         expected_profit: u64,
+        tip_percentage: u64,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
         // Build execute calldata from the calls
         let execute_calldata: Vec<Felt> = build_execute_calldata(&calls);
@@ -56,9 +57,9 @@ impl Account {
         // Create resource bounds from cached gas prices
         let resource_bounds = gas_price_cache.to_resource_bounds();
 
-        // Tip (per gas unit) = DEFAULT_TIP_PERCENTAGE% of profit / L2 gas max amount.
+        // Tip (per gas unit) = tip_percentage% of profit / L2 gas max amount.
         // Starknet v3 tip is per-unit (like EIP-1559 priority fee).
-        let desired_tip_total = (expected_profit as u128) * (DEFAULT_TIP_PERCENTAGE as u128) / 100;
+        let desired_tip_total = (expected_profit as u128) * (tip_percentage as u128) / 100;
         let tip = (desired_tip_total / resource_bounds.l2_gas.max_amount as u128)
             .min(u64::MAX as u128) as u64;
 

@@ -11,7 +11,14 @@ use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
 
 use crate::account::Account;
-use crate::constants::{EKUBO_ROUTER_ADDRESS, STRK_TOKEN_ADDRESS};
+use crate::constants::{
+    EKUBO_ROUTER_ADDRESS, ETH_TOKEN_ADDRESS, STRK_TOKEN_ADDRESS, USDC_TOKEN_ADDRESS,
+    USDT_TOKEN_ADDRESS,
+};
+use crate::dashboard::state::{
+    ConfigSnapshot, CounterSnapshot, DashboardSnapshot, DashboardState, GasPriceSnapshot,
+    OpportunityRecord, PnlRecord,
+};
 use crate::ekubo::events::Transaction;
 use crate::ekubo::paths::PathWithTokens;
 use crate::ekubo::state::{EvaluationRouteResult, State};
@@ -99,6 +106,10 @@ pub struct ArbitragerConfig {
     /// Minimum profit in hundredth basis points to trigger execution
     /// 100 = 1 BIP = 0.01%, 10000 = 1%
     pub min_profit_hbip: i128,
+    /// Percentage of profit to tip (0–100)
+    pub tip_percentage: u64,
+    /// Maximum hops in arbitrage paths (default 3, max 4)
+    pub max_hops: usize,
     /// Base amounts per token for multi-token arbitrage search
     /// Maps token address (U256) to base amount to search around
     pub tokens: HashMap<U256, U256>,
@@ -116,9 +127,23 @@ impl ArbitragerConfig {
         let mut tokens = HashMap::new();
 
         // STRK: 10_000 tokens (18 decimals) = 10_000 * 10^18
-        // This base amount may need to be adjusted based on observed profitable opportunity optima
         if let Ok(strk) = crate::ekubo::swap::hex_to_u256(STRK_TOKEN_ADDRESS) {
             tokens.insert(strk, U256::from(10_000_000_000_000_000_000_000u128));
+        }
+
+        // ETH: 1 ETH (18 decimals) = 1 * 10^18
+        if let Ok(eth) = crate::ekubo::swap::hex_to_u256(ETH_TOKEN_ADDRESS) {
+            tokens.insert(eth, U256::from(1_000_000_000_000_000_000u128));
+        }
+
+        // USDC: 10_000 USDC (6 decimals) = 10_000 * 10^6
+        if let Ok(usdc) = crate::ekubo::swap::hex_to_u256(USDC_TOKEN_ADDRESS) {
+            tokens.insert(usdc, U256::from(10_000_000_000u128));
+        }
+
+        // USDT: 10_000 USDT (6 decimals) = 10_000 * 10^6
+        if let Ok(usdt) = crate::ekubo::swap::hex_to_u256(USDT_TOKEN_ADDRESS) {
+            tokens.insert(usdt, U256::from(10_000_000_000u128));
         }
 
         Self {
@@ -130,6 +155,8 @@ impl ArbitragerConfig {
             account_private_key: account_private_key.into(),
             broadcast: false,
             min_profit_hbip: 100,
+            tip_percentage: crate::constants::DEFAULT_TIP_PERCENTAGE,
+            max_hops: crate::ekubo::paths::DEFAULT_MAX_HOPS,
             tokens,
         }
     }
@@ -146,6 +173,16 @@ impl ArbitragerConfig {
 
     pub fn with_min_profit_hbip(mut self, min_profit_hbip: i128) -> Self {
         self.min_profit_hbip = min_profit_hbip;
+        self
+    }
+
+    pub fn with_tip_percentage(mut self, tip_percentage: u64) -> Self {
+        self.tip_percentage = tip_percentage;
+        self
+    }
+
+    pub fn with_max_hops(mut self, max_hops: usize) -> Self {
+        self.max_hops = max_hops.min(4); // Cap at 4 to avoid combinatorial explosion
         self
     }
 
@@ -258,10 +295,10 @@ impl Simulator {
         let best_at_base = self.state.get_best(base_amount)?;
         let best_path = best_at_base.path.clone();
 
-        const SEARCH_ITERATIONS: usize = 5;
+        const SEARCH_ITERATIONS: usize = 10;
 
-        let mut low = base_amount / U256::from(2u64); // 50%
-        let mut high = base_amount + base_amount / U256::from(2u64); // 150%
+        let mut low = base_amount / U256::from(5u64); // 20%
+        let mut high = base_amount * U256::from(3u64); // 300%
 
         let mut best_result = best_at_base;
 
@@ -354,6 +391,8 @@ pub struct Arbitrager {
     shutdown: watch::Receiver<bool>,
     /// Health state for updating counters (None in tests / headless mode)
     health_state: Option<Arc<crate::HealthState>>,
+    /// Dashboard state for API (None in headless mode)
+    dashboard_state: Option<Arc<DashboardState>>,
 }
 
 impl Arbitrager {
@@ -362,6 +401,7 @@ impl Arbitrager {
         config: ArbitragerConfig,
         shutdown: watch::Receiver<bool>,
         health_state: Option<Arc<crate::HealthState>>,
+        dashboard_state: Option<Arc<DashboardState>>,
     ) -> Result<Self, ArbitragerError> {
         info!(
             json_path = %config.json_path,
@@ -370,7 +410,8 @@ impl Arbitrager {
         );
 
         // Load initial state from JSON
-        let state = Self::init_from_json(&config.json_path).await?;
+        let mut state = Self::init_from_json(&config.json_path).await?;
+        state.set_max_hops(config.max_hops);
 
         // RPC client — used for nonce, sync, and block headers
         let rpc = Arc::new(RPC::new(config.rpc_url.clone()));
@@ -409,6 +450,7 @@ impl Arbitrager {
             ekubo_router_address,
             shutdown,
             health_state,
+            dashboard_state,
         })
     }
 
@@ -799,6 +841,34 @@ impl Arbitrager {
             hs.inc_transactions();
         }
 
+        // Record to dashboard
+        if let Some(ref ds) = self.dashboard_state {
+            use std::sync::atomic::Ordering;
+            ds.batches_evaluated.fetch_add(1, Ordering::Relaxed);
+
+            if let Some(ref opp) = best {
+                ds.opportunities_found.fetch_add(1, Ordering::Relaxed);
+                ds.record_opportunity(OpportunityRecord {
+                    timestamp_ms: crate::dashboard::state::now_ms(),
+                    block: block_number,
+                    token: format!("{:x}", opp.token),
+                    amount_in: opp.amount_in.to_string(),
+                    amount_out: opp.amount_out.to_string(),
+                    profit: opp.profit,
+                    profit_hbip: opp.profit_hbip,
+                    hop_count: opp.hop_count,
+                    path_display: opp.format_path(),
+                    executed: false,
+                    tx_hash: None,
+                });
+                if opp.profit_hbip >= self.config.min_profit_hbip {
+                    ds.opportunities_above_threshold.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+
+            ds.publish_snapshot(self.build_dashboard_snapshot(block_number));
+        }
+
         let Some(best) = best else {
             info!(
                 block = block_number,
@@ -856,10 +926,12 @@ impl Arbitrager {
         let calls = best.build_swap_calls(token_address, self.ekubo_router_address);
 
         let payload =
-            match self
-                .account
-                .build_payload(&self.gas_price_cache, calls, best.profit as u64)
-            {
+            match self.account.build_payload(
+                &self.gas_price_cache,
+                calls,
+                best.profit as u64,
+                self.config.tip_percentage,
+            ) {
                 Ok(p) => p,
                 Err(e) => {
                     error!(error = %e, "Failed to build transaction payload");
@@ -883,10 +955,26 @@ impl Arbitrager {
                     hs.inc_reactions();
                 }
 
+                let tx_hash_str = format!("{:#x}", tx_hash);
+
+                // Record to dashboard
+                if let Some(ref ds) = self.dashboard_state {
+                    ds.record_pnl(PnlRecord {
+                        timestamp_ms: crate::dashboard::state::now_ms(),
+                        block: block_number,
+                        token: format!("{:x}", best.token),
+                        profit: best.profit,
+                        profit_hbip: best.profit_hbip,
+                        tx_hash: tx_hash_str.clone(),
+                        success: true,
+                    });
+                    ds.mark_last_opportunity_executed(tx_hash_str.clone());
+                }
+
                 let broadcast_time = start.elapsed();
 
                 info!(
-                    tx_hash = %format!("{:#x}", tx_hash),
+                    tx_hash = %tx_hash_str,
                     build_time = build_time.as_millis(),
                     broadcast_time = broadcast_time.as_millis(),
                     "Transaction broadcast successfully"
@@ -965,6 +1053,63 @@ impl Arbitrager {
         })
     }
 
+    /// Build a dashboard snapshot from current state
+    fn build_dashboard_snapshot(&self, current_block: u64) -> DashboardSnapshot {
+        use std::sync::atomic::Ordering;
+
+        let ds = self.dashboard_state.as_ref().unwrap();
+
+        DashboardSnapshot {
+            timestamp_ms: crate::dashboard::state::now_ms(),
+            current_block,
+            ws_connected: true,
+            broadcast_enabled: self.config.broadcast,
+            pool_count: self.state.pool_count(),
+            path_count: self.state.path_count(),
+            cycle_token_count: self.state.cycle_token_count(),
+            gas_prices: GasPriceSnapshot {
+                l1_gas_price: self.gas_price_cache.l1_gas_price(),
+                l2_gas_price: self.gas_price_cache.l2_gas_price(),
+                l1_data_gas_price: self.gas_price_cache.l1_data_gas_price(),
+                block_number: self.gas_price_cache.block_number(),
+            },
+            counters: CounterSnapshot {
+                uptime_secs: self
+                    .health_state
+                    .as_ref()
+                    .map(|h| h.start_time.elapsed().as_secs())
+                    .unwrap_or(0),
+                transactions_processed: self
+                    .health_state
+                    .as_ref()
+                    .map(|h| h.transactions_processed.load(Ordering::Relaxed))
+                    .unwrap_or(0),
+                reactions_sent: self
+                    .health_state
+                    .as_ref()
+                    .map(|h| h.reactions_sent.load(Ordering::Relaxed))
+                    .unwrap_or(0),
+                batches_evaluated: ds.batches_evaluated.load(Ordering::Relaxed),
+                opportunities_found: ds.opportunities_found.load(Ordering::Relaxed),
+                opportunities_above_threshold: ds
+                    .opportunities_above_threshold
+                    .load(Ordering::Relaxed),
+            },
+            config: ConfigSnapshot {
+                min_profit_hbip: self.config.min_profit_hbip,
+                tip_percentage: self.config.tip_percentage,
+                max_hops: self.config.max_hops,
+                broadcast: self.config.broadcast,
+                tokens: self
+                    .config
+                    .tokens
+                    .keys()
+                    .map(|t| format!("{:x}", t))
+                    .collect(),
+            },
+        }
+    }
+
     /// Export the current state to a JSON file
     pub fn export_state<P: AsRef<Path>>(&self, path: P) -> Result<(), ArbitragerError> {
         self.state
@@ -982,8 +1127,9 @@ impl Arbitrager {
 pub async fn run_arbitrager(
     config: ArbitragerConfig,
     health_state: Option<Arc<crate::HealthState>>,
+    dashboard_state: Option<Arc<DashboardState>>,
     shutdown: watch::Receiver<bool>,
 ) -> Result<(), ArbitragerError> {
-    let mut arbitrager = Arbitrager::new(config, shutdown, health_state).await?;
+    let mut arbitrager = Arbitrager::new(config, shutdown, health_state, dashboard_state).await?;
     arbitrager.run().await
 }

@@ -10,7 +10,7 @@ use super::evaluation::{
     evaluate_path, Direction, EvaluatePathResult, Hop, Path as EvalPath, PoolWithTokens,
 };
 use super::events::{PoolEvent, PoolId, Transaction, UpdateEvent, UpdateTickEvent};
-use super::paths::{get_paths, PathWithTokens};
+use super::paths::{get_paths, get_paths_with_max_hops, PathWithTokens};
 use super::pool::PoolExt;
 use super::swap::{hex_to_u256, u256_to_hex, Pool, SwapInfo, Tick, U256};
 
@@ -279,6 +279,8 @@ pub struct State {
     paths_by_token: HashMap<U256, Vec<PathWithTokens>>,
     /// Index: pool_key_hash -> set of tokens that have cycles through this pool
     tokens_by_pool: HashMap<u64, HashSet<U256>>,
+    /// Maximum hops for path finding
+    max_hops: usize,
 }
 
 impl State {
@@ -295,7 +297,13 @@ impl State {
             all_cycles: HashMap::new(),
             paths_by_token: HashMap::new(),
             tokens_by_pool: HashMap::new(),
+            max_hops: super::paths::DEFAULT_MAX_HOPS,
         }
+    }
+
+    /// Set the maximum number of hops for path finding
+    pub fn set_max_hops(&mut self, max_hops: usize) {
+        self.max_hops = max_hops;
     }
 
     /// Create a state from pools, computing paths between source and destination
@@ -312,6 +320,7 @@ impl State {
             all_cycles: HashMap::new(),
             paths_by_token: HashMap::new(),
             tokens_by_pool: HashMap::new(),
+            max_hops: super::paths::DEFAULT_MAX_HOPS,
         };
         state.rebuild_pool_index();
         state.rebuild_indices();
@@ -331,6 +340,7 @@ impl State {
             all_cycles: HashMap::new(),
             paths_by_token: HashMap::new(),
             tokens_by_pool: HashMap::new(),
+            max_hops: super::paths::DEFAULT_MAX_HOPS,
         };
         state.rebuild_pool_index();
         state.rebuild_indices();
@@ -953,7 +963,7 @@ impl State {
 
         // Compute cycles for each token
         for token in all_tokens {
-            let cycle_paths = get_paths(&self.pools, token, token);
+            let cycle_paths = get_paths_with_max_hops(&self.pools, token, token, self.max_hops);
 
             if cycle_paths.is_empty() {
                 continue;
@@ -1095,7 +1105,7 @@ impl State {
     }
 
     /// Ternary search iterations for amount optimization
-    const SEARCH_ITERATIONS: usize = 5;
+    const SEARCH_ITERATIONS: usize = 10;
 
     /// Find best cycle for a specific token (by profit_hbip)
     /// Then optimizes the amount using ternary search within 50% range
@@ -1128,9 +1138,9 @@ impl State {
         let best_path = paths[best_idx];
 
         // Step 2: Optimize amount for the best path using ternary search
-        // Search range: 50% to 150% of base_amount
-        let mut low = base_amount / U256::from(2u64); // 50%
-        let mut high = base_amount + base_amount / U256::from(2u64); // 150%
+        // Search range: 20% to 300% of base_amount
+        let mut low = base_amount / U256::from(5u64); // 20%
+        let mut high = base_amount * U256::from(3u64); // 300%
 
         let mut best_result: Option<(U256, EvaluatePathResult, i128, i128)> = None;
 

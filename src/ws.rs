@@ -156,8 +156,7 @@ async fn run_ws_stream(
         .await
         .map_err(|e| EventSourceError::Http(format!("WebSocket connect failed: {e}")))?;
 
-    // Subscribe to Ekubo events
-    // TODO: set finality_status to PRE_CONFIRMED for lowest latency
+    // Subscribe to Ekubo events with PRE_CONFIRMED finality for lowest latency
     let start_block = *block;
     let subscribe_req = serde_json::json!({
         "jsonrpc": "2.0",
@@ -166,6 +165,7 @@ async fn run_ws_stream(
             "from_address": EKUBO_CORE_ADDRESS,
             "keys": [[SWAPPED_KEY, POSITION_UPDATED_KEY]],
             "block_id": { "block_number": start_block },
+            "finality_status": "PRE_CONFIRMED",
         },
         "id": 1
     });

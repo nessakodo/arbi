@@ -10,6 +10,7 @@
 pub mod account;
 pub mod arbitrager;
 pub mod constants;
+pub mod dashboard;
 pub mod ekubo;
 pub mod errors;
 pub mod gas;
@@ -27,5 +28,7 @@ pub use ekubo::state::{EvaluationRouteResult, GlobalOptimalResult, State};
 pub use account::Account;
 
 pub use constants::CHAIN_ID_MAINNET;
+
+pub use dashboard::state::DashboardState;
 
 pub use health::{start_health_server, HealthState, DEFAULT_HEALTH_PORT};

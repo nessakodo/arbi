@@ -120,7 +120,7 @@ impl GasPriceCache {
     pub fn to_resource_bounds(&self) -> ResourceBounds {
         ResourceBounds {
             l1_gas: ResourceBound::new(100, self.l1_gas_price()),
-            l2_gas: ResourceBound::new(20_000_000, self.l2_gas_price()),
+            l2_gas: ResourceBound::new(5_000_000, self.l2_gas_price()),
             l1_data_gas: ResourceBound::new(2000, self.l1_data_gas_price()),
         }
     }
@@ -155,7 +155,7 @@ fn parse_hex_to_u128(hex_str: &str) -> u128 {
     }
 }
 
-/// Apply the gas price coefficient (1.15) to a price using integer math
+/// Apply the gas price coefficient (1.05) to a price using integer math
 fn apply_coefficient(price: u128) -> u128 {
-    price * 115 / 100
+    price * 105 / 100
 }
