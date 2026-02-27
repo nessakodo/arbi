@@ -110,6 +110,14 @@ pub struct ArbitragerConfig {
     pub tip_percentage: u64,
     /// Maximum hops in arbitrage paths (default 3, max 4)
     pub max_hops: usize,
+    /// Minimum expected net profit (after estimated fees + tip), in FRI.
+    pub min_net_profit_fri: u128,
+    /// Require gross expected profit to be at least this ratio of estimated cost.
+    /// 10000 = 1.0x, 15000 = 1.5x.
+    pub min_profit_to_cost_ratio_bps: u64,
+    /// Realized profit safety factor used when setting `clear_minimum`.
+    /// 8000 = 80% of quoted profit.
+    pub min_realization_bps: u64,
     /// Base amounts per token for multi-token arbitrage search
     /// Maps token address (U256) to base amount to search around
     pub tokens: HashMap<U256, U256>,
@@ -157,6 +165,9 @@ impl ArbitragerConfig {
             min_profit_hbip: 100,
             tip_percentage: crate::constants::DEFAULT_TIP_PERCENTAGE,
             max_hops: crate::ekubo::paths::DEFAULT_MAX_HOPS,
+            min_net_profit_fri: 20_000_000_000_000_000, // 0.02 STRK if 18 decimals
+            min_profit_to_cost_ratio_bps: 15_000,        // 1.5x fee coverage
+            min_realization_bps: 8_000,                  // 80% realization floor
             tokens,
         }
     }
@@ -178,6 +189,21 @@ impl ArbitragerConfig {
 
     pub fn with_tip_percentage(mut self, tip_percentage: u64) -> Self {
         self.tip_percentage = tip_percentage;
+        self
+    }
+
+    pub fn with_min_net_profit_fri(mut self, min_net_profit_fri: u128) -> Self {
+        self.min_net_profit_fri = min_net_profit_fri;
+        self
+    }
+
+    pub fn with_min_profit_to_cost_ratio_bps(mut self, min_profit_to_cost_ratio_bps: u64) -> Self {
+        self.min_profit_to_cost_ratio_bps = min_profit_to_cost_ratio_bps;
+        self
+    }
+
+    pub fn with_min_realization_bps(mut self, min_realization_bps: u64) -> Self {
+        self.min_realization_bps = min_realization_bps;
         self
     }
 
@@ -894,6 +920,52 @@ impl Arbitrager {
             );
             return;
         }
+        if best.profit <= 0 {
+            info!(
+                block = block_number,
+                batch_size = tx_hashes.len(),
+                tx_hashes = ?tx_hashes.join(", "),
+                events_applied,
+                profit = best.profit,
+                "Processed batch, non-positive gross profit"
+            );
+            return;
+        }
+
+        let gross_profit_fri = best.profit as u128;
+        let estimated_cost_fri = self.estimate_max_tx_cost_fri();
+        let estimated_tip_fri =
+            gross_profit_fri.saturating_mul(self.config.tip_percentage as u128) / 100;
+        let estimated_net_profit_fri =
+            gross_profit_fri.saturating_sub(estimated_cost_fri.saturating_add(estimated_tip_fri));
+        let required_gross_for_cost_ratio = estimated_cost_fri
+            .saturating_mul(self.config.min_profit_to_cost_ratio_bps as u128)
+            / 10_000;
+
+        if gross_profit_fri < required_gross_for_cost_ratio {
+            info!(
+                block = block_number,
+                gross_profit_fri = gross_profit_fri,
+                estimated_cost_fri = estimated_cost_fri,
+                min_profit_to_cost_ratio_bps = self.config.min_profit_to_cost_ratio_bps,
+                required_gross_for_cost_ratio = required_gross_for_cost_ratio,
+                "Processed batch, gross profit too close to estimated cost"
+            );
+            return;
+        }
+
+        if estimated_net_profit_fri < self.config.min_net_profit_fri {
+            info!(
+                block = block_number,
+                gross_profit_fri = gross_profit_fri,
+                estimated_cost_fri = estimated_cost_fri,
+                estimated_tip_fri = estimated_tip_fri,
+                estimated_net_profit_fri = estimated_net_profit_fri,
+                min_net_profit_fri = self.config.min_net_profit_fri,
+                "Processed batch, expected net profit below floor"
+            );
+            return;
+        }
 
         info!(
             block = block_number,
@@ -904,6 +976,10 @@ impl Arbitrager {
             eval_time = eval_time.as_millis(),
             token = %format!("{:x}", best.token),
             profit_hbip = best.profit_hbip,
+            gross_profit_fri = gross_profit_fri,
+            estimated_cost_fri = estimated_cost_fri,
+            estimated_tip_fri = estimated_tip_fri,
+            estimated_net_profit_fri = estimated_net_profit_fri,
             amount_in = %best.amount_in,
             amount_out = %best.amount_out,
             "Processed batch, found best opportunity"
@@ -923,15 +999,19 @@ impl Arbitrager {
 
         // Build and broadcast
         let token_address = u256_to_felt(&best.token);
-        let calls = best.build_swap_calls(token_address, self.ekubo_router_address);
+        let calls = best.build_swap_calls(
+            token_address,
+            self.ekubo_router_address,
+            self.config.min_realization_bps,
+            self.config.min_net_profit_fri,
+        );
 
-        let payload =
-            match self.account.build_payload(
-                &self.gas_price_cache,
-                calls,
-                best.profit as u64,
-                self.config.tip_percentage,
-            ) {
+        let payload = match self.account.build_payload(
+            &self.gas_price_cache,
+            calls,
+            gross_profit_fri,
+            self.config.tip_percentage,
+        ) {
                 Ok(p) => p,
                 Err(e) => {
                     error!(error = %e, "Failed to build transaction payload");
@@ -1115,6 +1195,24 @@ impl Arbitrager {
         self.state
             .export_to_json_file(path)
             .map_err(|e| ArbitragerError::StateLoad(e.to_string()))
+    }
+
+    /// Conservative upper-bound tx cost using current resource bounds and gas prices.
+    fn estimate_max_tx_cost_fri(&self) -> u128 {
+        let rb = self.gas_price_cache.to_resource_bounds();
+        let l1 = rb
+            .l1_gas
+            .max_price_per_unit
+            .saturating_mul(rb.l1_gas.max_amount as u128);
+        let l2 = rb
+            .l2_gas
+            .max_price_per_unit
+            .saturating_mul(rb.l2_gas.max_amount as u128);
+        let l1_data = rb
+            .l1_data_gas
+            .max_price_per_unit
+            .saturating_mul(rb.l1_data_gas.max_amount as u128);
+        l1.saturating_add(l2).saturating_add(l1_data)
     }
 }
 

@@ -110,17 +110,25 @@ impl ArbitrageOpportunity {
         &self,
         token_address: Felt,
         ekubo_router_address: Felt,
+        min_realization_bps: u64,
+        min_profit_floor_fri: u128,
     ) -> Vec<StarknetCall> {
         let route_hops = self.get_route_calldata();
-        let limbs = self.amount_in.as_limbs();
-        let amount_low = Felt::from((limbs[0] as u128) | ((limbs[1] as u128) << 64));
+        let (amount_low, amount_high) = split_u256_to_felts(&self.amount_in);
         let mut swap_calldata = vec![Felt::from(route_hops.len() as u64)];
         for hop in route_hops {
             swap_calldata.extend(hop);
         }
 
         // Add TokenAmount argument (token, amount_low)
-        swap_calldata.extend(vec![token_address, amount_low, Felt::ZERO]);
+        swap_calldata.extend(vec![token_address, amount_low, amount_high]);
+
+        // Protect against unexpected execution quality by requiring a minimum output.
+        let expected_profit = self.profit.max(0) as u128;
+        let realized_profit_floor = expected_profit.saturating_mul(min_realization_bps as u128) / 10_000;
+        let required_profit = realized_profit_floor.max(min_profit_floor_fri);
+        let minimum_out = self.amount_in.saturating_add(U256::from(required_profit));
+        let (minimum_out_low, minimum_out_high) = split_u256_to_felts(&minimum_out);
 
         vec![
             StarknetCall {
@@ -133,12 +141,19 @@ impl ArbitrageOpportunity {
                 selector: get_selector_from_name("clear_minimum").unwrap(),
                 calldata: vec![
                     token_address,
-                    Felt::ONE,  // clear minimum amount
-                    Felt::ZERO, // should be zero
+                    minimum_out_low,
+                    minimum_out_high,
                 ],
             },
         ]
     }
+}
+
+fn split_u256_to_felts(value: &U256) -> (Felt, Felt) {
+    let limbs = value.as_limbs();
+    let low = Felt::from((limbs[0] as u128) | ((limbs[1] as u128) << 64));
+    let high = Felt::from((limbs[2] as u128) | ((limbs[3] as u128) << 64));
+    (low, high)
 }
 
 /// Truncate a hex string to show prefix (first 6 chars after 0x)

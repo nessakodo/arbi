@@ -57,6 +57,28 @@ struct Args {
     #[arg(long, env = "APP_MAX_HOPS", default_value_t = 3)]
     max_hops: usize,
 
+    /// Minimum expected net profit (after estimated fee + tip), in FRI
+    #[arg(
+        long,
+        env = "APP_MIN_NET_PROFIT_FRI",
+        default_value_t = 20_000_000_000_000_000u128
+    )]
+    min_net_profit_fri: u128,
+
+    /// Require gross expected profit to be at least this ratio of estimated cost.
+    /// 10000 = 1.0x, 15000 = 1.5x
+    #[arg(
+        long,
+        env = "APP_MIN_PROFIT_TO_COST_RATIO_BPS",
+        default_value_t = 15_000u64
+    )]
+    min_profit_to_cost_ratio_bps: u64,
+
+    /// Realization safety factor for `clear_minimum`.
+    /// 8000 = require at least 80% of quoted profit at execution.
+    #[arg(long, env = "APP_MIN_REALIZATION_BPS", default_value_t = 8_000u64)]
+    min_realization_bps: u64,
+
     /// Health server port
     #[arg(long, env = "APP_HEALTH_PORT", default_value_t = 8080)]
     health_port: u16,
@@ -133,6 +155,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .with_broadcast(args.broadcast)
     .with_min_profit_hbip(args.min_profit_hbip)
     .with_tip_percentage(args.tip_percentage)
+    .with_min_net_profit_fri(args.min_net_profit_fri)
+    .with_min_profit_to_cost_ratio_bps(args.min_profit_to_cost_ratio_bps)
+    .with_min_realization_bps(args.min_realization_bps)
     .with_max_hops(args.max_hops);
 
     // Create shutdown channel for graceful shutdown

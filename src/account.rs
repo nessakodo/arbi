@@ -46,7 +46,7 @@ impl Account {
         &mut self,
         gas_price_cache: &GasPriceCache,
         calls: Vec<StarknetCall>,
-        expected_profit: u64,
+        expected_profit: u128,
         tip_percentage: u64,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
         // Build execute calldata from the calls
@@ -59,7 +59,7 @@ impl Account {
 
         // Tip (per gas unit) = tip_percentage% of profit / L2 gas max amount.
         // Starknet v3 tip is per-unit (like EIP-1559 priority fee).
-        let desired_tip_total = (expected_profit as u128) * (tip_percentage as u128) / 100;
+        let desired_tip_total = expected_profit.saturating_mul(tip_percentage as u128) / 100;
         let tip = (desired_tip_total / resource_bounds.l2_gas.max_amount as u128)
             .min(u64::MAX as u128) as u64;
 

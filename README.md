@@ -132,8 +132,22 @@ All options are set via CLI flags or environment variables.
 | `MIN_PROFIT_HBIP` | More executions, smaller profits, higher gas risk | Fewer executions, only high-conviction trades |
 | `TIP_PERCENTAGE` | Keep more profit, lower priority in block | Higher priority, less profit kept |
 | `MAX_HOPS` | Fewer paths, faster evaluation | More paths, more opportunities, slower evaluation |
+| `MIN_NET_PROFIT_FRI` | More executions, thinner post-fee edge | Fewer executions, better post-fee quality |
+| `MIN_PROFIT_TO_COST_RATIO_BPS` | Accepts tighter fee coverage | Requires larger edge vs estimated cost |
+| `MIN_REALIZATION_BPS` | Allows more execution slippage | Stricter minimum-out protection |
 
 **Recommended starting values:** `MIN_PROFIT_HBIP=100`, `TIP_PERCENTAGE=0`, `MAX_HOPS=3`
+
+The Starknet v3 tip is a per-gas-unit priority fee (like EIP-1559). It is derived from expected profit and `APP_TIP_PERCENTAGE`.
+
+### Safety gates
+
+Before broadcast, the bot applies:
+
+- gross `profit_hbip` threshold (`APP_MIN_PROFIT_HBIP`)
+- gross-profit-to-estimated-cost ratio threshold (`APP_MIN_PROFIT_TO_COST_RATIO_BPS`)
+- expected-net-profit floor after estimated max fees and tip (`APP_MIN_NET_PROFIT_FRI`)
+- `clear_minimum` output floor based on realization factor (`APP_MIN_REALIZATION_BPS`)
 
 ---
 
